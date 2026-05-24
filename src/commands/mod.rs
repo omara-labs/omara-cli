@@ -9,3 +9,4 @@ pub mod log;
 pub mod info;
 pub mod help;
 pub mod os;
+pub mod session;

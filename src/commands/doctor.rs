@@ -3,11 +3,6 @@ use colored::Colorize;
 use std::process::Command;
 use std::path::Path;
 
-/// Expand a path with tilde
-fn expand_path(path: &str) -> String {
-    shellexpand::tilde(path).to_string()
-}
-
 /// Check if a command exists in PATH
 fn check_command(cmd: &str) -> bool {
     Command::new("which")
@@ -21,7 +16,7 @@ fn check_command(cmd: &str) -> bool {
 
 /// Check if a file/directory exists
 fn check_path(path: &str) -> bool {
-    let expanded = expand_path(path);
+    let expanded = shellexpand::tilde(path).to_string();
     Path::new(&expanded).exists()
 }
 
@@ -76,11 +71,12 @@ pub enum DoctorCommands {
 }
 
 /// Run quick health checks
-fn run_quick() {
+fn run_quick(fix: bool) {
     println!("{}", "🩺  Omara Doctor - Quick Check".bold().cyan());
     println!();
 
     let mut all_good = true;
+    let mut fix_niri_config = false;
 
     // Core system
     if check_command("rustc") {
@@ -98,11 +94,12 @@ fn run_quick() {
     }
 
     // Niri config
-    if check_path("~/.config/omara/niri/config.kdl") || check_path("~/.config/niri/config.kdl") {
+    if check_path("~/.config/omara/niri/config.kdl") {
         println!("  {} Niri config", "✓".green());
     } else {
         println!("  {} Niri config", "✗".red());
         all_good = false;
+        fix_niri_config = true;
     }
 
     println!();
@@ -110,16 +107,30 @@ fn run_quick() {
         println!("{}", "✅ Quick check passed!");
     } else {
         println!("{}", "⚠️  Some issues found.".yellow());
+        if fix {
+            println!();
+            println!("{}", "🩹 Attempting automated healing...".bold().cyan());
+            if fix_niri_config {
+                println!("  → Restoring default Niri config...");
+                crate::commands::app::reset_app("niri");
+            }
+            println!();
+            println!("{}", "✅ Healing pass complete. Please re-run doctor to verify.".bold().green());
+        }
     }
 }
 
 /// Run full comprehensive diagnostics
-fn run_full() {
+fn run_full(fix: bool) {
     println!("{}", "🩺  Omara Doctor - Full Diagnostics".bold().cyan());
     println!();
 
     let mut all_good = true;
     let mut issues: Vec<String> = Vec::new();
+    let mut fixable_packages: Vec<String> = Vec::new();
+    let mut fix_ollama_service = false;
+    let mut fix_niri_config = false;
+    let mut fix_gh_config = false;
 
     // Rust toolchain
     if check_command("rustc") {
@@ -146,6 +157,7 @@ fn run_full() {
         } else {
             println!("  {} Ollama service", "⚠️".yellow());
             issues.push("Ollama not running: sudo systemctl start ollama".to_string());
+            fix_ollama_service = true;
         }
         
         let output = Command::new("ollama").arg("list").output();
@@ -162,16 +174,18 @@ fn run_full() {
         println!("  {} Ollama", "○".bright_black());
     }
 
-    // Niri
+    // Niri config
     if check_path("~/.config/omara/niri/config.kdl") {
         println!("  {} Niri config (Omara)", "✓".green());
     } else if check_path("~/.config/niri/config.kdl") {
         println!("  {} Niri config (legacy)", "⚠️".yellow());
         issues.push("Migrate config to ~/.config/omara/niri/".to_string());
+        fix_niri_config = true;
     } else {
         println!("  {} Niri config", "✗".red());
         issues.push("Manually link niri configs from omara-configs".to_string());
         all_good = false;
+        fix_niri_config = true;
     }
 
     // gh config
@@ -181,6 +195,7 @@ fn run_full() {
         println!("  {} gh config", "✗".red());
         issues.push("Restore gh config: omara app reset gh".to_string());
         all_good = false;
+        fix_gh_config = true;
     }
 
     // Required packages
@@ -205,35 +220,76 @@ fn run_full() {
                 println!("  {} {}", "✗".red(), pkg);
                 issues.push(format!("Install: sudo dnf install {}", pkg));
                 all_good = false;
+                fixable_packages.push(pkg.to_string());
             }
         }
     }
 
     println!();
     if all_good {
-        println!("{}", "✅ All checks passed. Your Omara system is healthy!");
+        println!("{}", "✅ All checks passed. Your Omara system is healthy!".bold().green());
     } else {
         println!("{}", "⚠️  Issues found:".yellow());
         for issue in &issues {
             println!("   - {}", issue);
         }
+
+        if fix {
+            println!();
+            println!("{}", "🩹 Attempting automated healing...".bold().cyan());
+
+            if fix_ollama_service {
+                println!("  → Starting Ollama service...");
+                let _ = Command::new("sudo")
+                    .args(["systemctl", "start", "ollama"])
+                    .status();
+            }
+
+            if fix_niri_config {
+                println!("  → Restoring default Niri config...");
+                crate::commands::app::reset_app("niri");
+            }
+
+            if fix_gh_config {
+                println!("  → Restoring default gh config...");
+                crate::commands::app::reset_app("gh");
+            }
+
+            if !fixable_packages.is_empty() {
+                println!("  → Installing missing packages: {}...", fixable_packages.join(", "));
+                let mut cmd = Command::new("sudo");
+                cmd.arg("dnf").arg("install").arg("-y");
+                for pkg in &fixable_packages {
+                    cmd.arg(pkg);
+                }
+                let status = cmd.status();
+                if status.map(|s| s.success()).unwrap_or(false) {
+                    println!("    ✅ Packages installed successfully.");
+                } else {
+                    eprintln!("    ❌ Package installation failed.");
+                }
+            }
+
+            println!();
+            println!("{}", "✅ Healing pass complete. Please re-run doctor to verify.".bold().green());
+        }
     }
 }
 
 /// Run all checks (same as check subcommand)
-fn run_check() {
-    run_full();
+fn run_check(fix: bool) {
+    run_full(fix);
 }
 
-pub fn run(command: &DoctorCommands) {
+pub fn run(command: &DoctorCommands, fix: bool) {
     match command {
-        DoctorCommands::Check => run_check(),
-        DoctorCommands::Quick => run_quick(),
-        DoctorCommands::Full => run_full(),
+        DoctorCommands::Check => run_check(fix),
+        DoctorCommands::Quick => run_quick(fix),
+        DoctorCommands::Full => run_full(fix),
     }
 }
 
 /// Default action: run full check
-pub fn run_default() {
-    run_full();
+pub fn run_default(fix: bool) {
+    run_full(fix);
 }

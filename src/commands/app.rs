@@ -258,7 +258,7 @@ fn restore_config(src: &Path, target_dir_path: &str) -> std::io::Result<()> {
 }
 
 /// Reset an application
-fn reset_app(package: &str) {
+pub fn reset_app(package: &str) {
     println!("{} Resetting {} to defaults...", "→".yellow(), package);
     
     let configs_dir = crate::paths::get_component_path("omara-core").join("configs");

@@ -29,6 +29,10 @@ enum Commands {
 
     /// Run system health checks (default: full)
     Doctor {
+        /// Automatically resolve fixable warnings
+        #[arg(short, long)]
+        fix: bool,
+
         #[command(subcommand)]
         action: Option<commands::doctor::DoctorCommands>,
     },
@@ -73,6 +77,12 @@ enum Commands {
         action: commands::os::OsCommands,
     },
 
+    /// Manage compositor session and power states
+    Session {
+        #[command(subcommand)]
+        action: commands::session::SessionCommands,
+    },
+
     /// Get help or ask questions using AI (e.g., omara help "how do I install firefox")
     Help { question: Option<String> },
 }
@@ -88,10 +98,10 @@ fn main() {
                 None => commands::screensaver::run_default(),
             }
         }
-        Commands::Doctor { action } => {
+        Commands::Doctor { action, fix } => {
             match action {
-                Some(a) => commands::doctor::run(a),
-                None => commands::doctor::run_default(),
+                Some(a) => commands::doctor::run(a, *fix),
+                None => commands::doctor::run_default(*fix),
             }
         }
         Commands::App { action } => {
@@ -126,6 +136,7 @@ fn main() {
         }
         Commands::Info => commands::info::run(),
         Commands::Os { action } => commands::os::run(action),
+        Commands::Session { action } => commands::session::run(action),
         Commands::Help { question } => commands::help::run(question.clone()),
     }
 }
