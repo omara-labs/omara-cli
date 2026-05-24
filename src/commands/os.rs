@@ -6,7 +6,7 @@ use std::process::Command;
 use chrono::Local;
 
 #[derive(Subcommand)]
-pub enum SystemCommands {
+pub enum OsCommands {
     /// Install Omara OS (environment-aware installer/bootstrap)
     Install {
         /// Force install without pre-flight checks or interactive prompts
@@ -145,9 +145,9 @@ fn audit_and_install_packages() {
     }
 }
 
-pub fn run(action: &SystemCommands) {
+pub fn run(action: &OsCommands) {
     match action {
-        SystemCommands::Install { force: _, dry_run } => {
+        OsCommands::Install { force: _, dry_run } => {
             let mode = detect_system_mode();
             println!("{}", "🖥️  Omara OS Installer".bold().cyan());
             println!("  Detected Mode: {}", mode.to_string().yellow());
@@ -200,7 +200,7 @@ pub fn run(action: &SystemCommands) {
                 }
             }
         }
-        SystemCommands::Reset { yes } => {
+        OsCommands::Reset { yes } => {
             println!("{}", "🔄  Omara System Reset".bold().cyan());
             println!("This will backup your existing config folder and restore defaults.");
             
