@@ -79,7 +79,7 @@ fn parse_manifest_file(file_path: &Path, manifest_dir: &Path, visited: &mut Hash
 
 /// Load app list from manifests
 fn load_app_manifests() -> Vec<String> {
-    let manifest_dir = crate::paths::get_component_path("omara-apps").join("manifests");
+    let manifest_dir = crate::paths::get_component_path("omara-os").join("manifests").join("dnf");
     
     let default_path = manifest_dir.join("default.txt");
     let mut apps = Vec::new();
