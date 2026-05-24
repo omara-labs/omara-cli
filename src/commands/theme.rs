@@ -132,27 +132,20 @@ fn set_theme(name: &str) {
         return;
     }
     
-    // Symlink active theme inside configuration directory
-    let config_dir = expand_path("~/.config/omara/theme");
+    // Write theme name directly to configuration file
+    let config_dir = expand_path("~/.config/omara");
     let _ = fs::create_dir_all(&config_dir);
     
-    let target = Path::new(&config_dir).join("active");
-    
-    // Remove existing active symlink/file if it exists
-    let _ = fs::remove_file(&target);
-    let _ = fs::remove_dir_all(&target);
-    
-    // Create symlink pointing ~/.config/omara/theme/active -> omara-art/themes/<name>
-    if let Err(e) = std::os::unix::fs::symlink(&theme_path, &target) {
-        println!("  ⚠️  Could not symlink theme: {}", e);
-        println!("  Manually link: ln -s {} ~/.config/omara/theme/active", theme_path.display());
+    let theme_file = Path::new(&config_dir).join("active_theme.txt");
+    if let Err(e) = fs::write(&theme_file, name) {
+        println!("  ⚠️  Could not write active theme file: {}", e);
         return;
     }
     
-    println!("  ✅ Theme active symlink updated!");
+    println!("  ✅ Active theme configuration updated!");
 
-    // Run Option C script hooks
-    run_theme_hooks(name, &target);
+    // Run Option C script hooks, passing theme name and direct path to theme folder
+    run_theme_hooks(name, &theme_path);
     
     println!("  ✅ Theme application complete!");
 }
@@ -162,27 +155,12 @@ fn show_current_theme() {
     println!("{}", "🎨  Current Theme".bold().cyan());
     println!();
     
-    let active_str = expand_path("~/.config/omara/theme/active");
-    let active_link = Path::new(&active_str);
-    if active_link.exists() {
-        if let Ok(real_path) = fs::canonicalize(&active_link) {
-            if let Some(name) = real_path.file_name().and_then(|f| f.to_str()) {
-                println!("  Current: {} ({})", name.yellow(), active_link.display());
-                return;
-            }
-        }
-    }
-    
-    // Fallback: check legacy theme directory layout
-    let config_dir = expand_path("~/.config/omara/theme");
-    if let Ok(entries) = fs::read_dir(&config_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if name != "active" {
-                    println!("  Current: {} (legacy setup)", name.yellow());
-                    return;
-                }
-            }
+    let theme_str = expand_path("~/.config/omara/active_theme.txt");
+    let theme_file = Path::new(&theme_str);
+    if theme_file.exists() {
+        if let Ok(name) = fs::read_to_string(&theme_file) {
+            println!("  Current: {}", name.trim().yellow());
+            return;
         }
     }
     
