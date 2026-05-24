@@ -70,9 +70,33 @@ pub enum DoctorCommands {
     Full,
 }
 
+fn get_omara_session() -> String {
+    if let Ok(val) = std::env::var("OMARA_SESSION") {
+        return val;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/jeryd".to_string());
+    let conf_path = std::path::Path::new(&home).join(".config").join("omara").join("omara.conf");
+    if conf_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(conf_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("OMARA_SESSION=") {
+                    return trimmed["OMARA_SESSION=".len()..]
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .to_string();
+                }
+            }
+        }
+    }
+    "gnome".to_string()
+}
+
 /// Run quick health checks
 fn run_quick(fix: bool) {
     println!("{}", "🩺  Omara Doctor - Quick Check".bold().cyan());
+    let session = get_omara_session();
+    println!("  Active Session: {}", session.yellow());
     println!();
 
     let mut all_good = true;
@@ -93,13 +117,22 @@ fn run_quick(fix: bool) {
         all_good = false;
     }
 
-    // Niri config
-    if check_path("~/.config/omara/niri/config.kdl") {
-        println!("  {} Niri config", "✓".green());
+    if session == "gnome" {
+        if check_command("gnome-shell") {
+            println!("  {} GNOME Shell", "✓".green());
+        } else {
+            println!("  {} GNOME Shell", "✗".red());
+            all_good = false;
+        }
     } else {
-        println!("  {} Niri config", "✗".red());
-        all_good = false;
-        fix_niri_config = true;
+        // Niri config
+        if check_path("~/.config/omara/niri/config.kdl") {
+            println!("  {} Niri config", "✓".green());
+        } else {
+            println!("  {} Niri config", "✗".red());
+            all_good = false;
+            fix_niri_config = true;
+        }
     }
 
     println!();
@@ -123,6 +156,8 @@ fn run_quick(fix: bool) {
 /// Run full comprehensive diagnostics
 fn run_full(fix: bool) {
     println!("{}", "🩺  Omara Doctor - Full Diagnostics".bold().cyan());
+    let session = get_omara_session();
+    println!("  Active Session: {}", session.yellow());
     println!();
 
     let mut all_good = true;
@@ -174,18 +209,23 @@ fn run_full(fix: bool) {
         println!("  {} Ollama", "○".bright_black());
     }
 
-    // Niri config
-    if check_path("~/.config/omara/niri/config.kdl") {
-        println!("  {} Niri config (Omara)", "✓".green());
-    } else if check_path("~/.config/niri/config.kdl") {
-        println!("  {} Niri config (legacy)", "⚠️".yellow());
-        issues.push("Migrate config to ~/.config/omara/niri/".to_string());
-        fix_niri_config = true;
+    // Configuration checks
+    if session == "gnome" {
+        println!("  {} GNOME mode active (compositor config check skipped)", "✓".green());
     } else {
-        println!("  {} Niri config", "✗".red());
-        issues.push("Manually link niri configs from omara-configs".to_string());
-        all_good = false;
-        fix_niri_config = true;
+        // Niri config
+        if check_path("~/.config/omara/niri/config.kdl") {
+            println!("  {} Niri config (Omara)", "✓".green());
+        } else if check_path("~/.config/niri/config.kdl") {
+            println!("  {} Niri config (legacy)", "⚠️".yellow());
+            issues.push("Migrate config to ~/.config/omara/niri/".to_string());
+            fix_niri_config = true;
+        } else {
+            println!("  {} Niri config", "✗".red());
+            issues.push("Manually link niri configs from omara-configs".to_string());
+            all_good = false;
+            fix_niri_config = true;
+        }
     }
 
     // gh config
@@ -198,24 +238,40 @@ fn run_full(fix: bool) {
         fix_gh_config = true;
     }
 
-    // Required packages
-    let required_pkgs = [
-        ("niri", false),
-        ("quickshell", false),
-        ("swaync", false),
-        ("kitty", false),
-        ("fish", false),
-        ("fastfetch", false),
-        ("wl-clipboard", false),
-        ("gh", false),
-    ];
+    // Required packages list based on active session
+    let required_pkgs = if session == "gnome" {
+        vec![
+            ("gnome-shell", false),
+            ("gnome-tweaks", false),
+            ("gnome-extensions-app", true),
+            ("dconf", false),
+            ("kitty", false),
+            ("fish", false),
+            ("fastfetch", false),
+            ("wl-clipboard", false),
+            ("gh", false),
+            ("niri", true),       // Optional/Paused
+            ("quickshell", true), // Optional/Paused
+        ]
+    } else {
+        vec![
+            ("niri", false),
+            ("quickshell", false),
+            ("swaync", false),
+            ("kitty", false),
+            ("fish", false),
+            ("fastfetch", false),
+            ("wl-clipboard", false),
+            ("gh", false),
+        ]
+    };
     
     for (pkg, optional) in required_pkgs {
         if check_dnf_package(pkg) || check_flatpak(pkg) {
             println!("  {} {}", "✓".green(), pkg);
         } else {
             if optional {
-                println!("  {} {} (optional)", "○".bright_black(), pkg);
+                println!("  {} {} (optional/paused)", "○".bright_black(), pkg);
             } else {
                 println!("  {} {}", "✗".red(), pkg);
                 issues.push(format!("Install: sudo dnf install {}", pkg));

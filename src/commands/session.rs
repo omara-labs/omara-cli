@@ -19,6 +19,28 @@ pub enum SessionCommands {
     Poweroff,
 }
 
+fn get_omara_session() -> String {
+    if let Ok(val) = std::env::var("OMARA_SESSION") {
+        return val;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/jeryd".to_string());
+    let conf_path = std::path::Path::new(&home).join(".config").join("omara").join("omara.conf");
+    if conf_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(conf_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("OMARA_SESSION=") {
+                    return trimmed["OMARA_SESSION=".len()..]
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .to_string();
+                }
+            }
+        }
+    }
+    "gnome".to_string()
+}
+
 pub fn run(action: &SessionCommands) {
     match action {
         SessionCommands::Lock => {
@@ -34,21 +56,29 @@ pub fn run(action: &SessionCommands) {
                     .args(["-f", "-c", "000000"])
                     .status();
                 if !swaylock_result.map(|s| s.success()).unwrap_or(false) {
-                    eprintln!("❌ Failed to lock session. Ensure a locker (e.g. swaylock) is installed.");
+                    eprintln!("❌ Failed to lock session. Ensure a locker is active.");
                 }
             }
         }
         SessionCommands::Logout => {
-            println!("🚪 Logging out of Niri session...");
-            let status = Command::new("niri")
-                .args(["--msg", "action", "quit", "--no-confirm"])
-                .status();
-            
-            if !status.map(|s| s.success()).unwrap_or(false) {
-                // Fallback to loginctl terminate
-                let _ = Command::new("loginctl")
-                    .args(["terminate-user", ""])
+            let session = get_omara_session();
+            if session == "gnome" {
+                println!("🚪 Logging out of GNOME session...");
+                let _ = Command::new("gnome-session-quit")
+                    .args(["--logout", "--no-prompt"])
                     .status();
+            } else {
+                println!("🚪 Logging out of Niri session...");
+                let status = Command::new("niri")
+                    .args(["--msg", "action", "quit", "--no-confirm"])
+                    .status();
+                
+                if !status.map(|s| s.success()).unwrap_or(false) {
+                    // Fallback to loginctl terminate
+                    let _ = Command::new("loginctl")
+                        .args(["terminate-user", ""])
+                        .status();
+                }
             }
         }
         SessionCommands::Suspend => {

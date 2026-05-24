@@ -70,13 +70,6 @@ enum Commands {
     /// Show system information
     Info,
 
-    /// Manage the Omara OS installation and state
-    #[command(alias = "system")]
-    Os {
-        #[command(subcommand)]
-        action: commands::os::OsCommands,
-    },
-
     /// Manage compositor session and power states
     Session {
         #[command(subcommand)]
@@ -135,7 +128,6 @@ fn main() {
             }
         }
         Commands::Info => commands::info::run(),
-        Commands::Os { action } => commands::os::run(action),
         Commands::Session { action } => commands::session::run(action),
         Commands::Help { question } => commands::help::run(question.clone()),
     }

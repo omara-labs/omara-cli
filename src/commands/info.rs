@@ -1,10 +1,6 @@
 use colored::Colorize;
 use std::process::Command;
 
-/// Expand a path with tilde
-fn expand_path(path: &str) -> String {
-    shellexpand::tilde(path).to_string()
-}
 
 /// Check if a command exists
 fn command_exists(cmd: &str) -> bool {
