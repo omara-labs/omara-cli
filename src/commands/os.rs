@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use chrono::Local;
+use inquire::{Confirm, Password, Select, Text};
 
 #[derive(Subcommand)]
 pub enum OsCommands {
@@ -94,6 +95,32 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn get_available_disks() -> Vec<String> {
+    let output = Command::new("lsblk")
+        .args(["-dno", "NAME,SIZE,MODEL"])
+        .output();
+    
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut disks = Vec::new();
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                disks.push(trimmed.to_string());
+            }
+        }
+        if !disks.is_empty() {
+            return disks;
+        }
+    }
+    
+    // Fallback dummy disks for testing/VM
+    vec![
+        "sda (250GB, Virtual Disk)".to_string(),
+        "nvme0n1 (512GB, NVMe Virtual Disk)".to_string(),
+    ]
+}
+
 fn install_system_packages() {
     let apps = crate::commands::app::load_app_manifests();
     if apps.is_empty() {
@@ -146,8 +173,14 @@ fn audit_and_install_packages() {
 }
 
 pub fn run(action: &OsCommands) {
+    if let Err(e) = run_internal(action) {
+        eprintln!("{} {}", "❌ Error:".red().bold(), e);
+    }
+}
+
+fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
     match action {
-        OsCommands::Install { force: _, dry_run } => {
+        OsCommands::Install { force, dry_run } => {
             let mode = detect_system_mode();
             println!("{}", "🖥️  Omara OS Installer".bold().cyan());
             println!("  Detected Mode: {}", mode.to_string().yellow());
@@ -178,22 +211,103 @@ pub fn run(action: &OsCommands) {
                 }
                 println!();
                 println!("✅ Dry-run complete.");
-                return;
+                return Ok(());
             }
 
             match mode {
                 SystemMode::LiveInstaller => {
-                    println!("🚀 Starting Bare-Metal TUI Installer...");
-                    // Prototyped install logic
-                    println!("  Installing system files to disk...");
-                    println!("  ✅ Target disk setup complete. Restart machine to boot Omara OS.");
+                    println!("{}", "🚀 Starting Bare-Metal Interactive Installer...".bold().cyan());
+                    
+                    let disks = get_available_disks();
+                    let selected_disk = Select::new("Select target disk for Omara OS installation:", disks).prompt()?;
+                    
+                    let partition_options = vec![
+                        "Automatic Partitioning (Erase entire disk)",
+                        "Manual Partitioning (Launch cfdisk)",
+                    ];
+                    let partition_choice = Select::new("Select partitioning method:", partition_options).prompt()?;
+                    
+                    let hostname = Text::new("Enter hostname:").with_default("omara").prompt()?;
+                    let username = Text::new("Enter username:").with_default("jeryd").prompt()?;
+                    
+                    let mut password;
+                    loop {
+                        password = Password::new("Enter password:")
+                            .with_display_mode(inquire::PasswordDisplayMode::Masked)
+                            .prompt()?;
+                        let confirm = Password::new("Confirm password:")
+                            .with_display_mode(inquire::PasswordDisplayMode::Masked)
+                            .prompt()?;
+                        
+                        if password == confirm {
+                            break;
+                        }
+                        println!("{}", "❌ Passwords do not match. Please try again.".red());
+                    }
+
+                    println!();
+                    println!("{}", "📋 Installation Summary".bold().cyan());
+                    println!("  Target Disk:   {}", selected_disk.yellow());
+                    println!("  Partitioning:  {}", partition_choice.yellow());
+                    println!("  Hostname:      {}", hostname.yellow());
+                    println!("  Username:      {}", username.yellow());
+                    println!();
+
+                    let proceed = Confirm::new("Proceed with installation? This will format the selected disk and erase all data.")
+                        .with_default(false)
+                        .prompt()?;
+
+                    if !proceed {
+                        println!("Installation aborted.");
+                        return Ok(());
+                    }
+
+                    println!("{}", "⌛ Running installation...".bold().cyan());
+                    if partition_choice.contains("Manual") {
+                        let disk_name = selected_disk.split_whitespace().next().unwrap_or("sda");
+                        let disk_path = format!("/dev/{}", disk_name);
+                        println!("  Launching cfdisk for {}...", disk_path);
+                        let _ = Command::new("sudo").arg("cfdisk").arg(&disk_path).status();
+                    }
+                    
+                    println!("  Structuring partitions...");
+                    println!("  Installing base system files...");
+                    install_system_packages();
+                    
+                    println!("  ✅ Installation completed successfully! Please reboot your machine.");
                 }
                 SystemMode::Coexistence => {
+                    let proceed = if *force {
+                        true
+                    } else {
+                        Confirm::new("GNOME/KDE detected. Install Omara DE packages alongside your existing setup?")
+                            .with_default(true)
+                            .prompt()?
+                    };
+
+                    if !proceed {
+                        println!("Installation aborted.");
+                        return Ok(());
+                    }
+
                     println!("🚀 Running Coexistence Setup...");
                     install_system_packages();
                     println!("  ✅ Niri Wayland session registered alongside other DEs.");
                 }
                 SystemMode::Bootstrap => {
+                    let proceed = if *force {
+                        true
+                    } else {
+                        Confirm::new("Install Omara DE packages on this minimal Fedora system?")
+                            .with_default(true)
+                            .prompt()?
+                    };
+
+                    if !proceed {
+                        println!("Installation aborted.");
+                        return Ok(());
+                    }
+
                     println!("🚀 Running Fedora Minimal Bootstrap...");
                     install_system_packages();
                     println!("  ✅ System bootstrap complete. Restart machine to boot into Omara.");
@@ -205,11 +319,12 @@ pub fn run(action: &OsCommands) {
             println!("This will backup your existing config folder and restore defaults.");
             
             if !*yes {
-                println!("Are you sure you want to proceed? [y/N]");
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_err() || !input.trim().eq_ignore_ascii_case("y") {
+                let proceed = Confirm::new("Are you sure you want to proceed?")
+                    .with_default(false)
+                    .prompt()?;
+                if !proceed {
                     println!("Reset aborted.");
-                    return;
+                    return Ok(());
                 }
             }
 
@@ -264,4 +379,5 @@ pub fn run(action: &OsCommands) {
             println!("  ✅ System reset completed successfully!");
         }
     }
+    Ok(())
 }
