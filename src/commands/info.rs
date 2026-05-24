@@ -100,7 +100,6 @@ fn get_component_versions() -> String {
     let components = [
         ("omara-configs", crate::paths::get_component_path("omara-core")),
         ("omara-cli", crate::paths::get_component_path("omara-cli")),
-        ("omara-de", crate::paths::get_component_path("omara-de")),
         ("omara-apps", crate::paths::get_component_path("omara-apps")),
         ("omara-art", crate::paths::get_component_path("omara-art")),
         ("omara-os", crate::paths::get_component_path("omara-os")),

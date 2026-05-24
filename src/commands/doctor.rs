@@ -170,7 +170,7 @@ fn run_full() {
         issues.push("Migrate config to ~/.config/omara/niri/".to_string());
     } else {
         println!("  {} Niri config", "✗".red());
-        issues.push("Manually link niri configs from omara-de".to_string());
+        issues.push("Manually link niri configs from omara-configs".to_string());
         all_good = false;
     }
 

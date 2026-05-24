@@ -262,7 +262,6 @@ fn reset_app(package: &str) {
     println!("{} Resetting {} to defaults...", "→".yellow(), package);
     
     let configs_dir = crate::paths::get_component_path("omara-core").join("configs");
-    let de_dir = crate::paths::get_component_path("omara-de");
     
     // List of (repo_source, target_dest)
     let config_restores = match package {
@@ -276,11 +275,11 @@ fn reset_app(package: &str) {
             (configs_dir.join("gh"), "~/.config/gh".to_string())
         ],
         "niri" => vec![
-            (de_dir.join("niri"), "~/.config/niri".to_string()),
-            (de_dir.join("niri"), "~/.config/omara/niri".to_string())
+            (configs_dir.join("niri"), "~/.config/niri".to_string()),
+            (configs_dir.join("niri"), "~/.config/omara/niri".to_string())
         ],
         "quickshell" => vec![
-            (de_dir.join("niri").join("quickshell"), "~/.config/quickshell".to_string())
+            (configs_dir.join("niri").join("quickshell"), "~/.config/quickshell".to_string())
         ],
         "neovim" | "nvim" => {
             println!("  Removing Neovim local config...");
