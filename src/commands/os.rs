@@ -1,8 +1,9 @@
 use clap::Subcommand;
 use colored::Colorize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::io::Write;
 use chrono::Local;
 use inquire::{Confirm, Password, Select, Text};
 
@@ -121,6 +122,21 @@ fn get_available_disks() -> Vec<String> {
     ]
 }
 
+fn get_offline_image_path() -> Option<PathBuf> {
+    let paths = [
+        "/run/initramfs/live/omara-base.tar.zst",
+        "/run/initramfs/live/LiveOS/rootfs.img",
+        "/tmp/omara-base.tar.zst", // For testing/debugging
+    ];
+    for p in &paths {
+        let path = Path::new(p);
+        if path.exists() {
+            return Some(path.to_path_buf());
+        }
+    }
+    None
+}
+
 fn install_system_packages() {
     let apps = crate::commands::app::load_app_manifests();
     if apps.is_empty() {
@@ -137,9 +153,31 @@ fn install_system_packages() {
     
     let status = cmd.status();
     if status.map(|s| s.success()).unwrap_or(false) {
-        println!("  ✅ Installed all packages.");
+        println!("  %  Installed all packages.");
     } else {
         eprintln!("  ❌ Package installation encountered errors.");
+    }
+}
+
+fn install_packages_to_root(root: &str) {
+    let apps = crate::commands::app::load_app_manifests();
+    if apps.is_empty() {
+        println!("  ⚠️  No packages found in manifests, skipping target package install.");
+        return;
+    }
+    println!("  Installing default package set into target root ({} apps)...", apps.len());
+    
+    let mut cmd = Command::new("sudo");
+    cmd.arg("dnf").arg(format!("--installroot={}", root)).arg("install").arg("-y");
+    for app in &apps {
+        cmd.arg(app);
+    }
+    
+    let status = cmd.status();
+    if status.map(|s| s.success()).unwrap_or(false) {
+        println!("  ✅ Installed all packages into target root.");
+    } else {
+        eprintln!("  ❌ Package installation in target root encountered errors.");
     }
 }
 
@@ -192,8 +230,11 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
                     SystemMode::LiveInstaller => {
                         println!("Planned Actions:");
                         println!("  1. Detect target block devices for partitioning.");
-                        println!("  2. Mount target partition to /mnt/sysroot.");
-                        println!("  3. Perform system image copying / bootstrap.");
+                        println!("  2. Format partition structure using ext4 and vfat.");
+                        println!("  3. Mount target partition to /mnt/sysroot.");
+                        println!("  4. Perform system image copying / bootstrap.");
+                        println!("  5. Generate /etc/fstab and set hostname.");
+                        println!("  6. Create administrator user and password.");
                     }
                     SystemMode::Coexistence => {
                         println!("Planned Actions:");
@@ -263,16 +304,111 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
                     }
 
                     println!("{}", "⌛ Running installation...".bold().cyan());
+                    let disk_name = selected_disk.split_whitespace().next().unwrap_or("sda");
+                    let disk_path = format!("/dev/{}", disk_name);
+                    
                     if partition_choice.contains("Manual") {
-                        let disk_name = selected_disk.split_whitespace().next().unwrap_or("sda");
-                        let disk_path = format!("/dev/{}", disk_name);
                         println!("  Launching cfdisk for {}...", disk_path);
                         let _ = Command::new("sudo").arg("cfdisk").arg(&disk_path).status();
+                    } else {
+                        // Automatic formatting
+                        println!("  Formatting partitions on {}...", disk_path);
+                        let p_boot = format!("{}1", disk_path);
+                        let p_root = format!("{}2", disk_path);
+                        
+                        let _ = Command::new("sudo").args(["mkfs.vfat", "-F32", &p_boot]).status();
+                        let _ = Command::new("sudo").args(["mkfs.ext4", "-F", &p_root]).status();
                     }
                     
-                    println!("  Structuring partitions...");
-                    println!("  Installing base system files...");
-                    install_system_packages();
+                    // Mounting target partitions
+                    let sysroot = "/mnt/sysroot";
+                    println!("  Mounting target root to {}...", sysroot);
+                    let _ = fs::create_dir_all(sysroot);
+                    let root_partition = format!("{}2", disk_path);
+                    let boot_partition = format!("{}1", disk_path);
+                    
+                    let mount_root_status = Command::new("sudo")
+                        .args(["mount", &root_partition, sysroot])
+                        .status();
+                    
+                    if mount_root_status.map(|s| s.success()).unwrap_or(false) {
+                        let efi_dir = format!("{}/boot/efi", sysroot);
+                        let _ = Command::new("sudo").args(["mkdir", "-p", &efi_dir]).status();
+                        let _ = Command::new("sudo").args(["mount", &boot_partition, &efi_dir]).status();
+                        
+                        // Check for Offline Image vs Online Bootstrap
+                        if let Some(image_path) = get_offline_image_path() {
+                            println!("  📦 Found offline system image at: {}", image_path.display().to_string().yellow());
+                            println!("  → Extracting base OS files...");
+                            let extract_status = Command::new("sudo")
+                                .args(["tar", "--zstd", "-xpf", image_path.to_str().unwrap(), "-C", sysroot])
+                                .status();
+                            
+                            if !extract_status.map(|s| s.success()).unwrap_or(false) {
+                                eprintln!("  ❌ Failed to extract offline image. Attempting DNF bootstrap fallback...");
+                                install_packages_to_root(sysroot);
+                            }
+                        } else {
+                            println!("  🌐 No offline system image found. Bootstrapping OS online via DNF...");
+                            let dnf_status = Command::new("sudo")
+                                .args(["dnf", "--installroot=/mnt/sysroot", "groupinstall", "-y", "Core", "Standard"])
+                                .status();
+                            
+                            if dnf_status.map(|s| s.success()).unwrap_or(false) {
+                                install_packages_to_root(sysroot);
+                            }
+                        }
+                        
+                        // Configure target system
+                        println!("  → Generating /etc/fstab...");
+                        let fstab_content = format!(
+                            "{} / ext4 defaults 1 1\n{} /boot/efi vfat defaults 0 2\n",
+                            root_partition, boot_partition
+                        );
+                        let fstab_path = format!("{}/etc/fstab", sysroot);
+                        let _ = Command::new("sudo")
+                            .args(["tee", &fstab_path])
+                            .stdin(std::process::Stdio::piped())
+                            .spawn()?
+                            .stdin
+                            .unwrap()
+                            .write_all(fstab_content.as_bytes());
+
+                        println!("  → Setting hostname to '{}'...", hostname);
+                        let hostname_path = format!("{}/etc/hostname", sysroot);
+                        let _ = Command::new("sudo")
+                            .args(["tee", &hostname_path])
+                            .stdin(std::process::Stdio::piped())
+                            .spawn()?
+                            .stdin
+                            .unwrap()
+                            .write_all(hostname.as_bytes());
+
+                        println!("  → Configuring administrator account...");
+                        let user_status = Command::new("sudo")
+                            .args(["chroot", sysroot, "useradd", "-m", "-G", "wheel", &username])
+                            .status();
+
+                        if user_status.map(|s| s.success()).unwrap_or(false) {
+                            let passwd_input = format!("{}:{}", username, password);
+                            let mut child = Command::new("sudo")
+                                .args(["chroot", sysroot, "chpasswd"])
+                                .stdin(std::process::Stdio::piped())
+                                .spawn()?;
+                            
+                            if let Some(mut stdin) = child.stdin.take() {
+                                stdin.write_all(passwd_input.as_bytes())?;
+                            }
+                            let _ = child.wait();
+                        }
+                        
+                        // Unmount target partitions
+                        println!("  Cleaning up and unmounting target...");
+                        let _ = Command::new("sudo").args(["umount", &efi_dir]).status();
+                        let _ = Command::new("sudo").args(["umount", sysroot]).status();
+                    } else {
+                        eprintln!("  ❌ Failed to mount target partitions.");
+                    }
                     
                     println!("  ✅ Installation completed successfully! Please reboot your machine.");
                 }
