@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Omara Labs <hello@omara.dev>"]
 description = "The official Omara command-line tool"
 license = "MIT"
-repository = "https://github.com/omara-labs/omara-core"
+repository = "https://github.com/omara-labs/omara-cli"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
