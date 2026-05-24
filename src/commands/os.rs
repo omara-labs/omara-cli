@@ -46,7 +46,7 @@ impl std::fmt::Display for SystemMode {
 }
 
 fn detect_system_mode() -> SystemMode {
-    if Path::new("/run/initramfs/live").exists() {
+    if Path::new("/run/initramfs/live").exists() || std::env::var("OMARA_LIVE_MOCK").is_ok() {
         SystemMode::LiveInstaller
     } else if has_other_des() {
         SystemMode::Coexistence
@@ -216,6 +216,55 @@ pub fn run(action: &OsCommands) {
     }
 }
 
+fn get_partition_path(disk_path: &str, index: usize) -> String {
+    if disk_path.chars().last().map_or(false, |c| c.is_ascii_digit()) {
+        format!("{}p{}", disk_path, index)
+    } else {
+        format!("{}{}", disk_path, index)
+    }
+}
+
+fn get_partition_uuid(partition_path: &str) -> Option<String> {
+    let output = Command::new("sudo")
+        .args(["blkid", "-s", "UUID", "-o", "value", partition_path])
+        .output();
+    
+    if let Ok(out) = output {
+        let uuid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !uuid.is_empty() {
+            return Some(uuid);
+        }
+    }
+    None
+}
+
+fn write_file_as_sudo(path: &str, content: &str) -> anyhow::Result<()> {
+    let temp_path = format!("/tmp/omara_temp_{}", Local::now().format("%H%M%S%f"));
+    fs::write(&temp_path, content)?;
+    let status = Command::new("sudo")
+        .args(["cp", &temp_path, path])
+        .status()?;
+    let _ = fs::remove_file(&temp_path);
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("Failed to write to file {} as sudo", path)
+    }
+}
+
+fn get_host_releasever() -> String {
+    if let Ok(content) = fs::read_to_string("/etc/os-release") {
+        for line in content.lines() {
+            if line.starts_with("VERSION_ID=") {
+                return line.trim_start_matches("VERSION_ID=")
+                    .trim_matches('"')
+                    .to_string();
+            }
+        }
+    }
+    "44".to_string() // Fallback to 44
+}
+
 fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
     match action {
         OsCommands::Install { force, dry_run } => {
@@ -223,37 +272,6 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
             println!("{}", "🖥️  Omara OS Installer".bold().cyan());
             println!("  Detected Mode: {}", mode.to_string().yellow());
             println!();
-
-            if *dry_run {
-                println!("{}", "⚠️  DRY-RUN MODE — No changes will be written.".yellow().bold());
-                match mode {
-                    SystemMode::LiveInstaller => {
-                        println!("Planned Actions:");
-                        println!("  1. Detect target block devices for partitioning.");
-                        println!("  2. Format partition structure using ext4 and vfat.");
-                        println!("  3. Mount target partition to /mnt/sysroot.");
-                        println!("  4. Perform system image copying / bootstrap.");
-                        println!("  5. Generate /etc/fstab and set hostname.");
-                        println!("  6. Create administrator user and password.");
-                    }
-                    SystemMode::Coexistence => {
-                        println!("Planned Actions:");
-                        println!("  1. Enable Tailscale, RPM Fusion, Walker, Niri, Quickshell, Yazi, and Omara Repos.");
-                        println!("  2. Install Wayland compositor, status bar, and desktop packages via DNF.");
-                        println!("  3. Preserve existing GNOME/KDE packages.");
-                        println!("  4. Register Niri session in /usr/share/wayland-sessions.");
-                    }
-                    SystemMode::Bootstrap => {
-                        println!("Planned Actions:");
-                        println!("  1. Enable all custom repositories (RPM Fusion, Coprs, Terra, Tailscale, Omara).");
-                        println!("  2. Install all default DNF packages from omara-os manifests.");
-                        println!("  3. Enable GDM/greetd display manager user service.");
-                    }
-                }
-                println!();
-                println!("✅ Dry-run complete.");
-                return Ok(());
-            }
 
             match mode {
                 SystemMode::LiveInstaller => {
@@ -294,6 +312,38 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
                     println!("  Username:      {}", username.yellow());
                     println!();
 
+                    if *dry_run {
+                        println!("{}", "⚠️  DRY-RUN MODE — No changes will be written.".yellow().bold());
+                        println!("Planned Actions (Simulated):");
+                        let disk_name = selected_disk.split_whitespace().next().unwrap_or("sda");
+                        let disk_path = format!("/dev/{}", disk_name);
+                        let p_boot = get_partition_path(&disk_path, 1);
+                        let p_root = get_partition_path(&disk_path, 2);
+                        println!("  1. [Dry Run] Wipe disk signatures on {}", disk_path);
+                        if partition_choice.contains("Manual") {
+                            println!("  2. [Dry Run] Would launch cfdisk for {}", disk_path);
+                        } else {
+                            println!("  2. [Dry Run] Create partition table on {} (EFI size 1GiB, Root remaining)", disk_path);
+                            println!("  3. [Dry Run] Format EFI partition {} as FAT32", p_boot);
+                            println!("  4. [Dry Run] Format root partition {} as ext4", p_root);
+                        }
+                        println!("  5. [Dry Run] Mount root partition {} to /mnt/sysroot", p_root);
+                        println!("  6. [Dry Run] Mount EFI partition {} to /mnt/sysroot/boot/efi", p_boot);
+                        if let Some(image_path) = get_offline_image_path() {
+                            println!("  7. [Dry Run] Extract offline base system image ({}) to /mnt/sysroot", image_path.display());
+                        } else {
+                            println!("  7. [Dry Run] Run online DNF bootstrap to /mnt/sysroot (release version: {})", get_host_releasever());
+                        }
+                        println!("  8. [Dry Run] Bind mount /dev, /proc, /sys to /mnt/sysroot");
+                        println!("  9. [Dry Run] Generate /etc/fstab and /etc/hostname (hostname: {})", hostname);
+                        println!(" 10. [Dry Run] Configure user account '{}' with sudo privileges", username);
+                        println!(" 11. [Dry Run] Run grub2-mkconfig and efibootmgr inside chroot");
+                        println!(" 12. [Dry Run] Clean up and unmount bind mounts and target partitions");
+                        println!();
+                        println!("✅ Dry-run simulation completed successfully.");
+                        return Ok(());
+                    }
+
                     let proceed = Confirm::new("Proceed with installation? This will format the selected disk and erase all data.")
                         .with_default(false)
                         .prompt()?;
@@ -303,29 +353,56 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
                         return Ok(());
                     }
 
+                    // Check root/sudo access first
+                    println!("Checking root privileges (may prompt for sudo password)...");
+                    let sudo_check = Command::new("sudo").arg("true").status();
+                    if !sudo_check.map(|s| s.success()).unwrap_or(false) {
+                        anyhow::bail!("This installation requires root/sudo privileges to proceed.");
+                    }
+
                     println!("{}", "⌛ Running installation...".bold().cyan());
                     let disk_name = selected_disk.split_whitespace().next().unwrap_or("sda");
                     let disk_path = format!("/dev/{}", disk_name);
+                    let boot_partition = get_partition_path(&disk_path, 1);
+                    let root_partition = get_partition_path(&disk_path, 2);
                     
                     if partition_choice.contains("Manual") {
                         println!("  Launching cfdisk for {}...", disk_path);
                         let _ = Command::new("sudo").arg("cfdisk").arg(&disk_path).status();
                     } else {
-                        // Automatic formatting
-                        println!("  Formatting partitions on {}...", disk_path);
-                        let p_boot = format!("{}1", disk_path);
-                        let p_root = format!("{}2", disk_path);
-                        
-                        let _ = Command::new("sudo").args(["mkfs.vfat", "-F32", &p_boot]).status();
-                        let _ = Command::new("sudo").args(["mkfs.ext4", "-F", &p_root]).status();
+                        // Automatic partitioning & formatting
+                        println!("  Wiping signatures on {}...", disk_path);
+                        let _ = Command::new("sudo").args(["wipefs", "-a", &disk_path]).status();
+
+                        println!("  Creating new GPT partition table on {}...", disk_path);
+                        let sfdisk_input = "label: gpt\nsize=1GiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B\ntype=0FC63DAF-8483-4772-8E79-3D69D8477DE4\n";
+                        let mut child = Command::new("sudo")
+                            .args(["sfdisk", &disk_path])
+                            .stdin(std::process::Stdio::piped())
+                            .spawn()?;
+                        if let Some(mut stdin) = child.stdin.take() {
+                            stdin.write_all(sfdisk_input.as_bytes())?;
+                        }
+                        let status = child.wait()?;
+                        if !status.success() {
+                            anyhow::bail!("Failed to partition target disk {}", disk_path);
+                        }
+
+                        // Re-read partition table
+                        let _ = Command::new("sudo").args(["partprobe", &disk_path]).status();
+                        let _ = Command::new("sudo").args(["udevadm", "settle"]).status();
+
+                        println!("  Formatting EFI partition ({}) as FAT32...", boot_partition);
+                        let _ = Command::new("sudo").args(["mkfs.vfat", "-F32", &boot_partition]).status();
+
+                        println!("  Formatting Root partition ({}) as ext4...", root_partition);
+                        let _ = Command::new("sudo").args(["mkfs.ext4", "-F", &root_partition]).status();
                     }
                     
                     // Mounting target partitions
                     let sysroot = "/mnt/sysroot";
                     println!("  Mounting target root to {}...", sysroot);
                     let _ = fs::create_dir_all(sysroot);
-                    let root_partition = format!("{}2", disk_path);
-                    let boot_partition = format!("{}1", disk_path);
                     
                     let mount_root_status = Command::new("sudo")
                         .args(["mount", &root_partition, sysroot])
@@ -334,55 +411,129 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
                     if mount_root_status.map(|s| s.success()).unwrap_or(false) {
                         let efi_dir = format!("{}/boot/efi", sysroot);
                         let _ = Command::new("sudo").args(["mkdir", "-p", &efi_dir]).status();
-                        let _ = Command::new("sudo").args(["mount", &boot_partition, &efi_dir]).status();
+                        let mount_boot_status = Command::new("sudo").args(["mount", &boot_partition, &efi_dir]).status();
+                        if !mount_boot_status.map(|s| s.success()).unwrap_or(false) {
+                            let _ = Command::new("sudo").args(["umount", sysroot]).status();
+                            anyhow::bail!("Failed to mount EFI partition to {}", efi_dir);
+                        }
                         
                         // Check for Offline Image vs Online Bootstrap
+                        let mut copy_success = false;
                         if let Some(image_path) = get_offline_image_path() {
                             println!("  📦 Found offline system image at: {}", image_path.display().to_string().yellow());
-                            println!("  → Extracting base OS files...");
-                            let extract_status = Command::new("sudo")
-                                .args(["tar", "--zstd", "-xpf", image_path.to_str().unwrap(), "-C", sysroot])
-                                .status();
-                            
-                            if !extract_status.map(|s| s.success()).unwrap_or(false) {
-                                eprintln!("  ❌ Failed to extract offline image. Attempting DNF bootstrap fallback...");
-                                install_packages_to_root(sysroot);
+                            if image_path.extension().map_or(false, |ext| ext == "img") {
+                                println!("  → Mounting and copying rootfs.img contents...");
+                                let temp_mount = "/mnt/live_rootfs";
+                                let _ = Command::new("sudo").args(["mkdir", "-p", temp_mount]).status();
+                                let mount_img = Command::new("sudo")
+                                    .args(["mount", "-o", "loop,ro", image_path.to_str().unwrap(), temp_mount])
+                                    .status();
+                                
+                                if mount_img.map(|s| s.success()).unwrap_or(false) {
+                                    println!("    Copying system files to target...");
+                                    let cp_status = Command::new("sudo")
+                                        .args(["cp", "-a", &format!("{}/.", temp_mount), sysroot])
+                                        .status();
+                                    
+                                    let _ = Command::new("sudo").args(["umount", temp_mount]).status();
+                                    
+                                    if cp_status.map(|s| s.success()).unwrap_or(false) {
+                                        copy_success = true;
+                                    } else {
+                                        eprintln!("  ❌ Failed to copy rootfs.img contents. Attempting DNF bootstrap fallback...");
+                                    }
+                                } else {
+                                    eprintln!("  ❌ Failed to mount rootfs.img. Attempting DNF bootstrap fallback...");
+                                }
+                            } else {
+                                // tar.zst path
+                                println!("  → Extracting base OS files...");
+                                let extract_status = Command::new("sudo")
+                                    .args(["tar", "--zstd", "-xpf", image_path.to_str().unwrap(), "-C", sysroot])
+                                    .status();
+                                
+                                if extract_status.map(|s| s.success()).unwrap_or(false) {
+                                    copy_success = true;
+                                } else {
+                                    eprintln!("  ❌ Failed to extract offline image. Attempting DNF bootstrap fallback...");
+                                }
                             }
-                        } else {
-                            println!("  🌐 No offline system image found. Bootstrapping OS online via DNF...");
+                        }
+
+                        if !copy_success {
+                            println!("  🌐 Bootstrapping OS online via DNF...");
+                            // Copy repo configurations first to ensure DNF has access to them in --installroot
+                            let target_repos_dir = format!("{}/etc/yum.repos.d", sysroot);
+                            let target_pki_dir = format!("{}/etc/pki", sysroot);
+                            let _ = Command::new("sudo").args(["mkdir", "-p", &target_repos_dir]).status();
+                            let _ = Command::new("sudo").args(["mkdir", "-p", &target_pki_dir]).status();
+                            let _ = Command::new("sudo").args(["cp", "-r", "/etc/yum.repos.d/.", &target_repos_dir]).status();
+                            let _ = Command::new("sudo").args(["cp", "-r", "/etc/pki/.", &target_pki_dir]).status();
+
+                            let releasever = get_host_releasever();
                             let dnf_status = Command::new("sudo")
-                                .args(["dnf", "--installroot=/mnt/sysroot", "groupinstall", "-y", "Core", "Standard"])
+                                .args(["dnf", "--installroot=/mnt/sysroot", &format!("--releasever={}", releasever), "groupinstall", "-y", "Core", "Standard"])
                                 .status();
                             
                             if dnf_status.map(|s| s.success()).unwrap_or(false) {
                                 install_packages_to_root(sysroot);
+                            } else {
+                                let _ = Command::new("sudo").args(["umount", &efi_dir]).status();
+                                let _ = Command::new("sudo").args(["umount", sysroot]).status();
+                                anyhow::bail!("Failed to run DNF bootstrap to target root");
                             }
                         }
                         
+                        // Bind mount system directories for chroot configuration
+                        println!("  → Binding system directories for chroot configuration...");
+                        let mounts = [
+                            ("/dev", "dev"),
+                            ("/proc", "proc"),
+                            ("/sys", "sys"),
+                            ("/sys/firmware/efi/efivars", "sys/firmware/efi/efivars"),
+                        ];
+                        let mut mounted_paths = Vec::new();
+                        for &(host_path, guest_rel) in &mounts {
+                            let target_path = format!("{}/{}", sysroot, guest_rel);
+                            if Path::new(host_path).exists() {
+                                let _ = fs::create_dir_all(&target_path);
+                                let status = Command::new("sudo")
+                                    .args(["mount", "--bind", host_path, &target_path])
+                                    .status();
+                                if status.map(|s| s.success()).unwrap_or(false) {
+                                    mounted_paths.push(target_path);
+                                }
+                            }
+                        }
+
                         // Configure target system
                         println!("  → Generating /etc/fstab...");
+                        let root_uuid = get_partition_uuid(&root_partition);
+                        let boot_uuid = get_partition_uuid(&boot_partition);
+                        
+                        let root_spec = root_uuid
+                            .as_ref()
+                            .map(|u| format!("UUID={}", u))
+                            .unwrap_or_else(|| root_partition.clone());
+                        let boot_spec = boot_uuid
+                            .as_ref()
+                            .map(|u| format!("UUID={}", u))
+                            .unwrap_or_else(|| boot_partition.clone());
+                        
                         let fstab_content = format!(
                             "{} / ext4 defaults 1 1\n{} /boot/efi vfat defaults 0 2\n",
-                            root_partition, boot_partition
+                            root_spec, boot_spec
                         );
                         let fstab_path = format!("{}/etc/fstab", sysroot);
-                        let _ = Command::new("sudo")
-                            .args(["tee", &fstab_path])
-                            .stdin(std::process::Stdio::piped())
-                            .spawn()?
-                            .stdin
-                            .unwrap()
-                            .write_all(fstab_content.as_bytes());
+                        if let Err(e) = write_file_as_sudo(&fstab_path, &fstab_content) {
+                            eprintln!("  ⚠️ Warning: Failed to write fstab: {}", e);
+                        }
 
                         println!("  → Setting hostname to '{}'...", hostname);
                         let hostname_path = format!("{}/etc/hostname", sysroot);
-                        let _ = Command::new("sudo")
-                            .args(["tee", &hostname_path])
-                            .stdin(std::process::Stdio::piped())
-                            .spawn()?
-                            .stdin
-                            .unwrap()
-                            .write_all(hostname.as_bytes());
+                        if let Err(e) = write_file_as_sudo(&hostname_path, &hostname) {
+                            eprintln!("  ⚠️ Warning: Failed to write hostname: {}", e);
+                        }
 
                         println!("  → Configuring administrator account...");
                         let user_status = Command::new("sudo")
@@ -397,20 +548,64 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
                                 .spawn()?;
                             
                             if let Some(mut stdin) = child.stdin.take() {
-                                stdin.write_all(passwd_input.as_bytes())?;
+                                let _ = stdin.write_all(passwd_input.as_bytes());
                             }
                             let _ = child.wait();
+
+                            // Ensure wheel group has sudo privileges
+                            println!("  → Setting up sudo for wheel group...");
+                            let sudoers_file = format!("{}/etc/sudoers.d/wheel", sysroot);
+                            let _ = write_file_as_sudo(&sudoers_file, "%wheel ALL=(ALL) ALL\n");
+                            let _ = Command::new("sudo").args(["chmod", "0440", &sudoers_file]).status();
+                        } else {
+                            eprintln!("  ⚠️ Warning: Failed to add user '{}' via chroot.", username);
+                        }
+
+                        // Install and configure Bootloader (GRUB and register with efibootmgr)
+                        println!("  → Installing and configuring GRUB bootloader...");
+                        let grub_status = Command::new("sudo")
+                            .args(["chroot", sysroot, "grub2-mkconfig", "-o", "/boot/grub2/grub.cfg"])
+                            .status();
+                        if !grub_status.map(|s| s.success()).unwrap_or(false) {
+                            eprintln!("  ⚠️ Warning: grub2-mkconfig returned non-zero status.");
+                        }
+
+                        println!("  → Registering EFI boot entry...");
+                        let efiboot_status = Command::new("sudo")
+                            .args([
+                                "chroot",
+                                sysroot,
+                                "efibootmgr",
+                                "-c",
+                                "-d",
+                                &disk_path,
+                                "-p",
+                                "1",
+                                "-L",
+                                "Omara OS",
+                                "-l",
+                                "\\EFI\\fedora\\shimx64.efi",
+                            ])
+                            .status();
+                        if !efiboot_status.map(|s| s.success()).unwrap_or(false) {
+                            eprintln!("  ⚠️ Warning: efibootmgr command returned non-zero status.");
+                        }
+
+                        // Unmount bind mounts in reverse order
+                        println!("  → Unmounting bind mounts...");
+                        for path in mounted_paths.iter().rev() {
+                            let _ = Command::new("sudo").args(["umount", "-l", path]).status();
                         }
                         
                         // Unmount target partitions
                         println!("  Cleaning up and unmounting target...");
                         let _ = Command::new("sudo").args(["umount", &efi_dir]).status();
                         let _ = Command::new("sudo").args(["umount", sysroot]).status();
+                        
+                        println!("  ✅ Installation completed successfully! Please reboot your machine.");
                     } else {
-                        eprintln!("  ❌ Failed to mount target partitions.");
+                        anyhow::bail!("Failed to mount target partitions.");
                     }
-                    
-                    println!("  ✅ Installation completed successfully! Please reboot your machine.");
                 }
                 SystemMode::Coexistence => {
                     let proceed = if *force {
@@ -423,6 +618,17 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
 
                     if !proceed {
                         println!("Installation aborted.");
+                        return Ok(());
+                    }
+
+                    if *dry_run {
+                        println!("{}", "⚠️  DRY-RUN MODE — No changes will be written.".yellow().bold());
+                        println!("Planned Actions (Simulated):");
+                        println!("  1. [Dry Run] Enable custom repositories (Tailscale, RPM Fusion, etc.).");
+                        println!("  2. [Dry Run] Install DNF packages from omara-os manifests.");
+                        println!("  3. [Dry Run] Register Niri Wayland session.");
+                        println!();
+                        println!("✅ Dry-run simulation completed successfully.");
                         return Ok(());
                     }
 
@@ -441,6 +647,17 @@ fn run_internal(action: &OsCommands) -> anyhow::Result<()> {
 
                     if !proceed {
                         println!("Installation aborted.");
+                        return Ok(());
+                    }
+
+                    if *dry_run {
+                        println!("{}", "⚠️  DRY-RUN MODE — No changes will be written.".yellow().bold());
+                        println!("Planned Actions (Simulated):");
+                        println!("  1. [Dry Run] Enable custom repositories.");
+                        println!("  2. [Dry Run] Install DNF packages from omara-os manifests.");
+                        println!("  3. [Dry Run] Enable greetd display manager user service.");
+                        println!();
+                        println!("✅ Dry-run simulation completed successfully.");
                         return Ok(());
                     }
 
