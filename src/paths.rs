@@ -16,9 +16,9 @@ pub fn get_workspace_dir() -> PathBuf {
 }
 
 /// Helper to get a subcomponent path relative to the workspace.
-/// E.g. get_component_path("omara-apps") -> ~/Projects/omara-labs/omara-apps
+/// E.g. get_component_path("omara-configs") -> ~/Projects/omara-labs/omara-configs
 pub fn get_component_path(component: &str) -> PathBuf {
-    // Check if there is a specific env override for the component, e.g. OMARA_APPS_DIR
+    // Check if there is a specific env override for the component, e.g. OMARA_CONFIGS_DIR
     let env_key = format!("OMARA_{}_DIR", component.to_uppercase().replace("-", "_"));
     if let Ok(env_dir) = env::var(&env_key) {
         return PathBuf::from(env_dir);
