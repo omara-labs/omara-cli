@@ -66,6 +66,12 @@ enum Commands {
     /// Show system information
     Info,
 
+    /// Manage the Omara OS installation and state
+    System {
+        #[command(subcommand)]
+        action: commands::system::SystemCommands,
+    },
+
     /// Get help or ask questions using AI (e.g., omara help "how do I install firefox")
     Help { question: Option<String> },
 }
@@ -118,6 +124,7 @@ fn main() {
             }
         }
         Commands::Info => commands::info::run(),
+        Commands::System { action } => commands::system::run(action),
         Commands::Help { question } => commands::help::run(question.clone()),
     }
 }
